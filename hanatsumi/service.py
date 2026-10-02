@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from hanatsumi.client import DanbooruClient
@@ -21,7 +21,7 @@ from hanatsumi.config import (
     MIN_RECOMMENDED_DELAY,
 )
 from hanatsumi.errors import UsageError
-from hanatsumi.scan import ProgressFn, ScanStats, run_scan
+from hanatsumi.scan import Progress, ProgressFn, ScanStats, run_scan
 from hanatsumi.storage import (
     CsvStore,
     State,
@@ -146,6 +146,17 @@ def _scan(
         store.close()
 
 
+def _with_total_hint(progress: ProgressFn | None, total_hint: int | None) -> ProgressFn | None:
+    """把已知的预期总行数注入到每一次进度回调（refresh 用它给出行口径 ETA）。"""
+    if progress is None or not total_hint:
+        return progress
+
+    def _wrapped(p: Progress) -> None:
+        progress(replace(p, total_hint=total_hint))
+
+    return _wrapped
+
+
 # --------------------------------------------------------------------------- #
 # 动作
 # --------------------------------------------------------------------------- #
@@ -239,6 +250,10 @@ def refresh(
     if not paths.out.exists() or paths.out.stat().st_size == 0:
         raise UsageError("尚无 CSV，请先运行 `hanatsumi fetch` 完成一次全量抓取。")
 
+    # 旧快照的行数就是本次刷新的“预期总行数”，能让进度给出比 id 口更准的行口径 ETA
+    official = State.load(paths.state)
+    total_hint = official.rows if official and official.rows else None
+
     tmp_out, tmp_state = paths.staging
     if tmp_out.exists():
         state = State.load(tmp_state)
@@ -264,7 +279,7 @@ def refresh(
         floor_id=None,
         page_size=page_size,
         max_pages=max_pages,
-        progress=progress,
+        progress=_with_total_hint(progress, total_hint),
     )
     if stats.reason != "eof" or not state.complete:
         log.warning("刷新未完成（%s），暂存于 %s，重跑 `hanatsumi refresh` 继续；正式文件 %s 未被改动", stats.reason, tmp_out, paths.out)

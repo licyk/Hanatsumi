@@ -74,11 +74,16 @@ hanatsumi
 `status` / `verify` / `version` 的表格在 stdout；`--debug` 在任何层级都可用。
 
 ```text
-[0:12] pages=13 rows=13,000 rate=1105/s cursor=2730104 eta=41:20   ← stderr，原地刷新
-INFO  完成（max_pages）：pages=13 fetched=13,000 written=13,000 …  ← stderr，日志
+[0:12] id   0% pages=13 rows=13,000 rate=1105/s cursor=2730104 eta=41:20  ← stderr，原地刷新
+INFO  完成（max_pages）：pages=13 fetched=13,000 written=13,000 …         ← stderr，日志
 INFO  状态：rows=13,000 range=[2730104, 2743978] complete=False
 INFO  CSV：data/tags.csv
 ```
+
+进度行里的 `id NN%` 是**精确**进度（已扫过的 id 区间占比，游标降到数据集底部即 100%）；
+`eta=` 是估算值，口径分两层：`refresh` 用上一次快照的行数当总数（**行口径，很准**），
+全新 `fetch` 只能按 id 区间线性外推（**id 口径，偏保守**）—— Danbooru 不提供总数，
+且 id 密度极不均匀（实测 4%~96%），详见 [docs/design.md](docs/design.md)。
 
 ## 输出文件
 

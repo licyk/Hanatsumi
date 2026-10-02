@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from typing import Any
@@ -19,7 +20,7 @@ from rich.console import Console
 from rich.table import Table
 
 from hanatsumi.config import FIELDS
-from hanatsumi.scan import ProgressFn, ScanStats
+from hanatsumi.scan import Progress, ProgressFn
 from hanatsumi.service import Report, RunResult
 
 log = logging.getLogger(__name__)
@@ -52,40 +53,70 @@ def _hms(seconds: float) -> str:
     return f"{h:d}:{m:02d}:{s:02d}" if h else f"{m:d}:{s:02d}"
 
 
-def _estimate_eta(stats: ScanStats, cursor: int | None, start_id: int | None, elapsed: float) -> str:
-    """按已覆盖的 id 区间线性外推剩余页数（估算值）。"""
-    if not start_id or not cursor or cursor < 1 or stats.pages < 2:
+def _estimate_eta(p: Progress) -> str:
+    """剩余时间估算，两种口径，优先行口径。
+
+    两者都是同一个式子：``已用时 × (剩余量 / 已完成量)``。
+
+    1. **行口径**（有 ``total_hint`` 时，即 ``refresh``）——用上一次完整快照的行数当
+       总数，行数是实际工作量，估算接近精确；
+    2. **id 口径**（兜底，全新 ``fetch`` 只有这个）——按**本次运行**已扫过的 id 区间
+       线性外推。id 密度并不均匀（实测 4%~96%），所以这是估算值，且方向偏保守
+       （顶部密、底部疏，通常会把剩余时间说长一些）。
+
+    Danbooru 不提供总数（无 Count 头、无 counts 端点、偏移分页封顶 1000 页），
+    所以全新抓取拿不到精确总数。
+    """
+    # 1) 行口径
+    if p.total_hint and p.stats.written and p.total_hint > p.stats.written and p.elapsed > 0:
+        return _hms(p.elapsed * (p.total_hint - p.stats.written) / p.stats.written)
+
+    # 2) id 口径：速率分母必须是“本次运行”覆盖的区间（续传时 start_id 含上次跑的区间）
+    floor = p.floor_id if p.floor_id is not None else 1
+    if p.run_origin is None or p.cursor is None or p.elapsed <= 0:
         return "?"
-    covered = start_id - cursor
-    if covered <= 0:
-        return "?"
-    remaining_pages = stats.pages * (cursor - 1) / covered - stats.pages
-    if remaining_pages <= 0:
+    covered = p.run_origin - p.cursor
+    remaining = p.cursor - floor
+    if covered <= 0 or remaining <= 0:
         return "<1m"
-    return _hms(elapsed * remaining_pages / stats.pages)
+    return _hms(p.elapsed * remaining / covered)
 
 
-def _progress_line(stats: ScanStats, cursor: int | None, start_id: int | None, elapsed: float) -> str:
-    rate = stats.written / elapsed if elapsed > 0 else 0.0
-    cursor_text = f"{cursor:,}" if cursor else "top"
+def _id_progress(p: Progress) -> float:
+    """整个数据集扫过的 id 区间百分比（精确值，与行数密度无关）。"""
+    floor = p.floor_id if p.floor_id is not None else 1
+    if not p.start_id or p.cursor is None or p.start_id <= floor:
+        return 0.0
+    return min(100.0, max(0.0, (p.start_id - p.cursor) / (p.start_id - floor) * 100))
+
+
+def _progress_line(p: Progress) -> str:
+    rate = p.stats.written / p.elapsed if p.elapsed > 0 else 0.0
+    cursor_text = f"{p.cursor:,}" if p.cursor else "top"
     return (
-        f"[cyan][{_hms(elapsed)}][/cyan] pages={stats.pages} rows={stats.written:,} "
-        f"[green]rate={rate:.0f}/s[/green] cursor=[dim]{cursor_text}[/dim] eta=[yellow]{_estimate_eta(stats, cursor, start_id, elapsed)}[/yellow]"
+        f"[cyan][{_hms(p.elapsed)}][/cyan] id {_id_progress(p):>3.0f}% "
+        f"pages={p.stats.pages} rows={p.stats.written:,} "
+        f"[green]rate={rate:.0f}/s[/green] cursor=[dim]{cursor_text}[/dim] eta=[yellow]{_estimate_eta(p)}[/yellow]"
     )
+
+
+def _render_progress(p: Progress) -> None:
+    line = _progress_line(p)
+    # 按“可见宽度”补空格，否则上一行残留的字符会留在原地（终端列宽不受 ANSI 影响）
+    plain = re.sub(r"\[.*?\]", "", line)
+    pad = max(0, _PROGRESS_WIDTH - len(plain))
+    err_console.print(line + " " * pad, end="\r", soft_wrap=True)
 
 
 @contextmanager
 def scan_progress(enabled: bool = True) -> Iterator[ProgressFn]:
     """给出一个回调，把扫描进度原地刷新到 stderr；结束时换行。"""
     if not enabled:
-        yield lambda _stats, _cursor, _start_id, _elapsed: None
+        yield lambda _p: None
         return
 
-    def render(stats: ScanStats, cursor: int | None, start_id: int | None, elapsed: float) -> None:
-        err_console.print(f"{_progress_line(stats, cursor, start_id, elapsed):<{_PROGRESS_WIDTH}}", end="\r", soft_wrap=True)
-
     try:
-        yield render
+        yield _render_progress
     finally:
         err_console.print()
 

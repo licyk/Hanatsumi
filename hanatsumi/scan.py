@@ -28,9 +28,7 @@ from hanatsumi.storage import CsvStore, State, utc_now
 
 log = logging.getLogger(__name__)
 
-ProgressFn = Callable[["ScanStats", int | None, int | None, float], None]
-
-__all__ = ["PageFetcher", "ProgressFn", "ScanError", "ScanStats", "run_scan"]
+__all__ = ["PageFetcher", "Progress", "ProgressFn", "ScanError", "ScanStats", "run_scan"]
 
 
 class PageFetcher(Protocol):
@@ -47,12 +45,44 @@ class ScanStats:
     fetched: int = 0
     written: int = 0
     skipped: int = 0
+    retries: int = 0  # 累计重试次数（来自 client.retries），用来解释速率波动
     reason: str = ""
     started_at: str = field(default_factory=utc_now)
 
     def summary(self, elapsed: float) -> str:
         rate = self.written / elapsed if elapsed > 0 else 0.0
-        return f"pages={self.pages} fetched={self.fetched:,} written={self.written:,} skipped={self.skipped} elapsed={elapsed:.1f}s rate={rate:.1f} rows/s reason={self.reason}"
+        retries = f" retries={self.retries}" if self.retries else ""
+        return f"pages={self.pages} fetched={self.fetched:,} written={self.written:,} skipped={self.skipped} elapsed={elapsed:.1f}s rate={rate:.1f} rows/s reason={self.reason}{retries}"
+
+
+@dataclass(frozen=True, slots=True)
+class Progress:
+    """每页结束时交给进度回调的快照。
+
+    两个起点各司其职：
+
+    ``start_id``
+        **累计**起点（数据集顶部），算“整个数据集扫了百分之几”，跨多次续传保持连续。
+    ``run_origin``
+        **本次运行**的起点（续传时等于启动那一刻的游标），算“这次跑得有多快”，
+        ETA 用它。两者混用会让续传的 ETA 严重偏小。
+
+    ``floor_id``
+        扫描下界：``update`` 停在 ``state.max_id``，全量/刷新停在数据集底部（None → 用 1 兜底）。
+    ``total_hint``
+        已知的预期总行数（``refresh`` 用上一次完整快照的行数），此时行口径 ETA 比 id 口准。
+    """
+
+    stats: ScanStats
+    cursor: int | None
+    start_id: int | None
+    run_origin: int | None
+    floor_id: int | None
+    elapsed: float
+    total_hint: int | None = None
+
+
+ProgressFn = Callable[[Progress], None]
 
 
 def _decode(raw_rows: list[dict], stats: ScanStats) -> list[Tag]:
@@ -88,7 +118,8 @@ def run_scan(
 
     if floor_id is None:
         cursor = state.min_id  # None => 从最新开始
-        start_id = state.max_id
+        start_id = state.max_id  # 累计进度分母（数据集顶部）
+        run_origin = state.min_id  # 本次运行的起点（续传时是启动那一刻的游标）
     else:
         latest = client.latest_id()
         if latest is None or latest <= floor_id:
@@ -100,6 +131,11 @@ def run_scan(
         # page=b{id} 是严格小于，所以从 latest+1 起步才能包含最新那条
         cursor = latest + 1
         start_id = latest
+        run_origin = latest + 1
+
+    def emit() -> None:
+        if progress is not None:
+            progress(Progress(stats=stats, cursor=cursor, start_id=start_id, run_origin=run_origin, floor_id=floor_id, elapsed=clock() - started))
 
     while True:
         if max_pages and stats.pages >= max_pages:
@@ -108,12 +144,16 @@ def run_scan(
 
         raw_rows = client.fetch_page(cursor, page_size)
         stats.pages += 1
+        retries = getattr(client, "retries", None)
+        if isinstance(retries, int):
+            stats.retries = retries
 
         if not raw_rows:
-            # 到达数据集底部
+            # 到达数据集底部（真实完成信号是空页，不是 cursor 真的变成 0）
             stats.reason = "eof"
             if floor_id is None:
                 state.complete = True
+            cursor = floor_id if floor_id is not None else 1  # 已扫到底 → 进度 100%
             break
 
         # 防御性校验：必须严格按 id 降序，且严格小于游标
@@ -129,6 +169,8 @@ def run_scan(
         stats.fetched += len(rows)
         if start_id is None:  # 全新扫描：用首页最大 id 作为进度分母
             start_id = ids[0]
+        if run_origin is None:
+            run_origin = ids[0]
         tags = _decode(rows, stats)
 
         if floor_id is not None:
@@ -147,17 +189,16 @@ def run_scan(
         if floor_id is not None and new_cursor <= floor_id:
             state.complete = True
             stats.reason = "caught_up"
+            cursor = floor_id  # 已追上存量 → 进度 100%
             break
         if cursor is not None and new_cursor >= cursor:
             raise ScanError(f"游标未前进（{cursor} → {new_cursor}），疑似 API 返回异常")
         cursor = new_cursor
 
-        if progress is not None:
-            progress(stats, cursor, start_id, clock() - started)
+        emit()
 
     state.complete = state.complete or (floor_id is None and stats.reason == "eof")
     state.last_mode = mode
     state.save(state_path)
-    if progress is not None:
-        progress(stats, cursor, start_id, clock() - started)
+    emit()
     return stats

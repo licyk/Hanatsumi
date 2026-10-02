@@ -13,17 +13,19 @@ import logging
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 from typer.testing import CliRunner
 
 import hanatsumi.service as service_module
 from hanatsumi.cli.app import get_app
+from hanatsumi.cli.output import _estimate_eta, _id_progress, _progress_line
 from hanatsumi.client import DanbooruClient
 from hanatsumi.config import FIELDS
 from hanatsumi.errors import ApiError, ScanError, UsageError
 from hanatsumi.logger import LOGGER_NAME
 from hanatsumi.models import Tag, TagDecodeError
-from hanatsumi.scan import run_scan
+from hanatsumi.scan import Progress, ScanStats, run_scan
 from hanatsumi.storage import BOM, CsvStore, State, csv_stats, promote_staging, staging_paths, state_path_for
 
 runner = CliRunner()
@@ -326,6 +328,77 @@ class ScanTest(unittest.TestCase):
         with CsvStore(self.csv_path) as store, self.assertRaises(ScanError):
             run_scan(client, store, state, state_path=self.state_path, floor_id=5)
 
+    def test_progress_carries_floor_and_run_origin(self) -> None:
+        seen: list[Progress] = []
+        state = State(min_id=1, max_id=5, rows=5, complete=True)
+        state.save(self.state_path)
+        with CsvStore(self.csv_path) as store:
+            store.write_tags([Tag.from_api(make_raw(i)) for i in range(1, 6)])
+            run_scan(scripted_client(list(range(1, 9))), store, state, state_path=self.state_path, floor_id=5, progress=seen.append)
+        self.assertTrue(seen)
+        self.assertEqual(seen[-1].floor_id, 5)  # 增量模式的停止线
+        self.assertIsNotNone(seen[-1].run_origin)
+        self.assertIsNone(seen[-1].total_hint)
+
+
+# --------------------------------------------------------------------------- #
+class ProgressLineTest(unittest.TestCase):
+    """进度行与 ETA：数字取自 2026-10-02 那次真实全量抓取的现场观察。"""
+
+    @staticmethod
+    def _progress(**over) -> Progress:
+        # 现场：[34:50] pages=1278 rows=1,285,000 cursor=1,293,425
+        base: dict[str, Any] = {
+            "stats": ScanStats(pages=1278, written=1_285_000),
+            "cursor": 1_293_425,
+            "start_id": 2_744_001,
+            "run_origin": 2_744_001,
+            "floor_id": None,
+            "elapsed": 34 * 60 + 50,
+        }
+        base.update(over)
+        return Progress(**base)  # type: ignore[arg-type]
+
+    def test_eta_not_underflow_on_fresh_fetch(self) -> None:
+        """根因回归：旧公式把 remaining 算成负数 → '<1m'，实际还剩约 30 分钟。"""
+        eta = _estimate_eta(self._progress())
+        self.assertTrue(eta.startswith("31:"), eta)
+
+    def test_eta_uses_row_hint_when_known(self) -> None:
+        """refresh 用旧快照行数（1,836,879）当总数 → 行口径，接近真相（约 15 分钟）。"""
+        eta = _estimate_eta(self._progress(total_hint=1_836_879))
+        self.assertTrue(eta.startswith("14:"), eta)
+
+    def test_eta_uses_run_origin_not_cumulative_start(self) -> None:
+        """续传时速率分母必须是本次运行覆盖的区间，否则 ETA 会小得离谱。"""
+        resumed = self._progress(cursor=1_280_000, run_origin=1_293_425, elapsed=16.0, stats=ScanStats(pages=10, written=10_000))
+        eta = _estimate_eta(resumed)
+        self.assertTrue(eta.startswith("25:"), eta)  # 若误用 start_id 会算成 0:14
+
+    def test_eta_at_or_past_floor_is_under_a_minute(self) -> None:
+        self.assertEqual(_estimate_eta(self._progress(cursor=1, floor_id=None)), "<1m")
+        self.assertEqual(_estimate_eta(self._progress(cursor=2_743_986, floor_id=2_743_986, run_origin=2_744_004)), "<1m")
+
+    def test_eta_unknown_before_first_cursor(self) -> None:
+        self.assertEqual(_estimate_eta(self._progress(cursor=None, run_origin=None)), "?")
+
+    def test_progress_line_shows_id_percentage(self) -> None:
+        line = _progress_line(self._progress())
+        self.assertRegex(line, r"id\s+53%")  # 1,450,576 / 2,744,000 = 52.9%（右对齐补零到 3 位）
+        self.assertIn("cursor=", line)
+        self.assertIn("1,293,425", line)  # 带 [dim] 包裹，拆开断言
+        self.assertIn("pages=1278", line)
+        self.assertIn("eta=31:03", line.replace("[yellow]", "").replace("[/yellow]", ""))
+
+    def test_id_progress_reaches_100_at_completion(self) -> None:
+        done = self._progress(cursor=1)
+        self.assertAlmostEqual(_id_progress(done), 100.0, places=5)
+        self.assertEqual(_id_progress(self._progress(cursor=None)), 0.0)
+
+    def test_summary_reports_retries(self) -> None:
+        self.assertIn("retries=3", ScanStats(retries=3).summary(10.0))
+        self.assertNotIn("retries=", ScanStats().summary(10.0))
+
 
 # --------------------------------------------------------------------------- #
 class CliTest(unittest.TestCase):
@@ -442,6 +515,21 @@ class RefreshCliTest(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertEqual(csv_stats(self.out)["rows"], 10)
         self.assertFalse(tmp_csv.exists())
+
+    def test_refresh_injects_previous_row_count_as_total_hint(self) -> None:
+        """旧快照行数 → total_hint → 行口径 ETA。"""
+        with CsvStore(self.out) as store:
+            store.write_tags([Tag.from_api(make_raw(i)) for i in (10, 9, 8)])
+        State(min_id=8, max_id=10, rows=3, complete=True).save(self.state_path)
+
+        seen: list[Progress] = []
+        with PatchedClient(scripted_client(list(range(1, 11)))):
+            service_module.refresh(service_module.Paths.build(self.out, self.state_path), progress=seen.append)
+
+        self.assertTrue(seen)
+        self.assertEqual(seen[-1].total_hint, 3)
+        # 行口径确实被采用：3 行为总数、进度写满后不再外推
+        self.assertEqual(_estimate_eta(seen[-1]), "<1m")
 
 
 if __name__ == "__main__":
