@@ -49,7 +49,7 @@ pip install hanatsumi
 从源码（含开发工具 ruff / ty / pytest）：
 
 ```bash
-git clone git@github.com:licyk/temp.git && cd temp
+git clone git@github.com:licyk/Hanatsumi.git && cd Hanatsumi
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 ```
