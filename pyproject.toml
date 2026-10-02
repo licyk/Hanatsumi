@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools", "pip", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hanatsumi"
+description = "Fetch every Danbooru tag into a local CSV: resumable, incremental, refreshable"
+readme = "README.md"
+requires-python = ">=3.10"
+dynamic = ["version"]
+license = "GPL-3.0-only"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "requests",
+    "typer>=0.26.7",
+    "rich",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff", "ty"]
+
+[project.scripts]
+hanatsumi = "hanatsumi.cli.app:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["hanatsumi*"]
+
+[tool.setuptools.dynamic]
+version = { attr = "hanatsumi.version.VERSION" }
+
+[tool.ruff]
+line-length = 180
+indent-width = 4
+lint.ignore = [
+    "E402" # module-import-not-at-top-of-file
+]
+
+[tool.ty.environment]
+python-version = "3.10"
+
+[tool.ty.terminal]
+output-format = "concise"
+
+[tool.ty.src]
+include = ["hanatsumi"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
