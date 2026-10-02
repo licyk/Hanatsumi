@@ -2,6 +2,27 @@
 
 # Hanatsumi
 
+<p align="center">
+  <a href="https://github.com/licyk/Hanatsumi/stargazers">
+    <img src="https://img.shields.io/github/stars/licyk/Hanatsumi?style=flat&logo=github&logoColor=silver&color=bluegreen&labelColor=grey" alt="Stars">
+  </a>
+  <a href="https://github.com/licyk/Hanatsumi/issues">
+    <img src="https://img.shields.io/github/issues/licyk/Hanatsumi?style=flat&logo=github&logoColor=silver&color=bluegreen&labelColor=grey" alt="Issues">
+  </a>
+  <a href="https://github.com/licyk/Hanatsumi/commits/main">
+    <img src="https://flat.badgen.net/github/last-commit/licyk/Hanatsumi/main?icon=github&color=green&label=last%20main%20commit" alt="Last main commit">
+  </a>
+  <a href="https://github.com/licyk/Hanatsumi/actions/workflows/release.yml">
+    <img src="https://github.com/licyk/Hanatsumi/actions/workflows/release.yml/badge.svg" alt="Release">
+  </a>
+  <a href="https://pypi.org/project/hanatsumi/">
+    <img src="https://img.shields.io/pypi/v/hanatsumi?style=flat&logo=pypi&logoColor=silver&color=bluegreen&labelColor=grey" alt="PyPI version">
+  </a>
+  <a href="https://pypi.org/project/hanatsumi/">
+    <img src="https://img.shields.io/pypi/pyversions/hanatsumi?style=flat&logo=python&logoColor=silver&color=bluegreen&labelColor=grey" alt="Python versions">
+  </a>
+</p>
+
 </div>
 
 抓取 [Danbooru Tags API](https://danbooru.donmai.us/tags.json) 的**全部 tag**，保存为本地 CSV，
