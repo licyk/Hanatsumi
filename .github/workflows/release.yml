@@ -34,12 +34,12 @@ jobs:
       - run: pip install -e ".[dev]"
       - name: Lint
         run: |
-          python -m ruff check hanatsumi tests
-          python -m ruff format --check hanatsumi tests
+          python -m ruff check
+          python -m ruff format --check
       - name: Tests
         run: python -m pytest -q
       - name: Python types (ty)
-        run: python -m ty check hanatsumi --python "$(command -v python)" --output-format github
+        run: python -m ty check --python "$(command -v python)" --output-format github
 
   build:
     name: Build the wheel

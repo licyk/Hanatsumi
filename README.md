@@ -143,9 +143,9 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
 python -m pytest -q                      # 30 个离线用例
-python -m ruff check hanatsumi tests     # lint
-python -m ruff format --check hanatsumi tests
-python -m ty check hanatsumi             # 类型检查（自动发现 .venv）
+python -m ruff check                     # lint
+python -m ruff format --check
+python -m ty check                       # 类型检查（自动发现 .venv）
 ```
 
 ## 许可证

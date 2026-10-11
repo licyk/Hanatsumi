@@ -41,6 +41,7 @@ include = ["hanatsumi*"]
 version = { attr = "hanatsumi.version.VERSION" }
 
 [tool.ruff]
+include = ["hanatsumi/**/*.{py,pyi,ipynb}", "tests/**/*.{py,pyi,ipynb}"]
 line-length = 180
 indent-width = 4
 lint.ignore = [

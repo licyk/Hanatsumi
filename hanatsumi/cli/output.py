@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Generator, Iterable, Sequence
 from contextlib import contextmanager
 from typing import Any
 
@@ -109,7 +109,7 @@ def _render_progress(p: Progress) -> None:
 
 
 @contextmanager
-def scan_progress(enabled: bool = True) -> Iterator[ProgressFn]:
+def scan_progress(enabled: bool = True) -> Generator[ProgressFn, None, None]:
     """给出一个回调，把扫描进度原地刷新到 stderr；结束时换行。"""
     if not enabled:
         yield lambda _p: None
